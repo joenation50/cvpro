@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const cv = body?.cv;
-    const job = body?.job;
+    const job = body?.jobDescription ||body?.job;
 
     if (!cv || !job) {
       return NextResponse.json(
