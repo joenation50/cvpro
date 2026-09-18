@@ -17,6 +17,7 @@
     "pdf-parse": "^1.1.1",
     "axios": "^1.7.3",
     "openai": "^4.55.0"
+    "@paystack/inline-js": "^2.22.0",
   },
   "devDependencies": {
     "typescript": "^5.5.4",
