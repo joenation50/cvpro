@@ -18,6 +18,8 @@
     "axios": "^1.7.3",
     "openai": "^4.55.0"
     "@paystack/inline-js": "^2.22.0",
+    "pdfjs-dist": "^4.0.379",
+  "mammoth": "^1.7.0"
   },
   "devDependencies": {
     "typescript": "^5.5.4",
