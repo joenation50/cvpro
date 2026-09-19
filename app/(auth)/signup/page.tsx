@@ -164,6 +164,17 @@ export default function SignupPage() {
         </Link>
       </p>
 
-      <p className="mt-5 text-center text-[11px] text-gray-600 leading-relaxed">
+            <p className="mt-5 text-center text-[11px] text-gray-600 leading-relaxed">
         By signing up you agree to our{" "}
-        <Link href="/terms" className="text-stone hover:text
+        <Link href="/terms" className="text-stone hover:text-cyan">
+          Terms
+        </Link>{" "}
+        and{" "}
+        <Link href="/privacy" className="text-stone hover:text-cyan">
+          Privacy Policy
+        </Link>
+        .
+      </p>
+    </div>
+  );
+}
