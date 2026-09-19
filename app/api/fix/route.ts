@@ -1,23 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createServerSupabase } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/**
- * CVPro — /api/fix
- * Accepts { cv, jobDescription } (or { cv, job }), calls OpenRouter free models
- * with fallback, returns { atsScore, rewrittenCv, missingKeywords, improvements }.
- *
- * Made by PrimeWeb Designs
- */
-
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-// ---------------------------------------------------------------------------
-// Free models on OpenRouter — order matters.
-// Loop tries each in order; falls through on 404, 429, timeout, or bad JSON.
-// Update this list if OpenRouter rotates their free tier.
-// ---------------------------------------------------------------------------
 const MODELS = [
   "deepseek/deepseek-v4-flash-0731:free",
   "inclusionai/ling-3.0-flash-fin:free",
@@ -25,6 +13,8 @@ const MODELS = [
   "liquid/lfm2.5-2.6b:free",
   "meta-llama/llama-3.3-70b-instruct:free",
 ];
+
+const FREE_FIX_LIMIT = 3;
 
 const SYSTEM_PROMPT = `You are CVPro, an expert CV writer specializing in the Nigerian job market and ATS (Applicant Tracking System) optimization.
 
@@ -55,10 +45,36 @@ Rules:
 
 export async function POST(req: NextRequest) {
   try {
+    const supabase = createServerSupabase();
+
+    // ---- 1. Require auth ----
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json(
+        { error: "Please log in to fix your CV.", code: "AUTH_REQUIRED" },
+        { status: 401 }
+      );
+    }
+
+    // ---- 2. Fetch profile + free-fix count ----
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("free_fixes_used")
+      .eq("id", user.id)
+      .single();
+
+    const fixesUsed = profile?.free_fixes_used ?? 0;
+    const isFreeFix = fixesUsed < FREE_FIX_LIMIT;
+
+    // ---- 3. Parse body ----
     const body = await req.json();
     const cv = body?.cv;
-    // Accept BOTH field names — frontend might send either
     const job = body?.jobDescription || body?.job;
+    const template = body?.template || "classic";
+    const paidFix = body?.paidFix === true; // set by client after payment
 
     if (!cv || !job) {
       return NextResponse.json(
@@ -81,6 +97,18 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // ---- 4. Enforce payment if free fixes exhausted ----
+    if (!isFreeFix && !paidFix) {
+      return NextResponse.json(
+        {
+          error: "You've used your free fixes. Pay to continue.",
+          code: "PAYMENT_REQUIRED",
+        },
+        { status: 402 }
+      );
+    }
+
+    // ---- 5. Run AI ----
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
@@ -93,11 +121,8 @@ export async function POST(req: NextRequest) {
 
     let lastError = "All models failed";
 
-    // ---- Fallback loop: try each free model in order ----
     for (const model of MODELS) {
       try {
-        console.log(`[/api/fix] Trying model: ${model}`);
-
         const res = await fetch(OPENROUTER_URL, {
           method: "POST",
           headers: {
@@ -114,40 +139,30 @@ export async function POST(req: NextRequest) {
             ],
             temperature: 0.4,
             max_tokens: 3000,
-            // NOTE: no response_format — some free models reject it
           }),
           signal: AbortSignal.timeout(9000),
         });
 
-        // ---- Model rejected the request — try next ----
         if (!res.ok) {
           const errText = await res.text();
-          console.error(
-            `[/api/fix] ${model} HTTP ${res.status}:`,
-            errText.slice(0, 200)
-          );
+          console.error(`[${model}] HTTP ${res.status}:`, errText.slice(0, 200));
           lastError = `Model ${model} failed: ${res.status}`;
           continue;
         }
 
-        // ---- Parse response ----
         const data = await res.json();
         const raw = data?.choices?.[0]?.message?.content;
-
         if (!raw || typeof raw !== "string") {
-          console.error(`[/api/fix] ${model} returned empty content`);
           lastError = `Empty response from ${model}`;
           continue;
         }
 
-        // Strip any accidental markdown fences
         const cleaned = raw
           .replace(/^```json\s*/i, "")
           .replace(/^```\s*/i, "")
           .replace(/```$/i, "")
           .trim();
 
-        // Some models wrap JSON in prose — extract the first {...} block
         let jsonString = cleaned;
         if (!jsonString.startsWith("{")) {
           const match = cleaned.match(/\{[\s\S]*\}/);
@@ -158,53 +173,52 @@ export async function POST(req: NextRequest) {
         try {
           parsed = JSON.parse(jsonString);
         } catch {
-          console.error(
-            `[/api/fix] ${model} malformed JSON:`,
-            jsonString.slice(0, 200)
-          );
           lastError = `Malformed JSON from ${model}`;
           continue;
         }
 
-        // ---- Normalize result shape ----
         const result = {
           atsScore:
             typeof parsed.atsScore === "number"
               ? Math.max(0, Math.min(100, Math.round(parsed.atsScore)))
               : 0,
           rewrittenCv:
-            typeof parsed.rewrittenCv === "string"
-              ? parsed.rewrittenCv
-              : "",
+            typeof parsed.rewrittenCv === "string" ? parsed.rewrittenCv : "",
           missingKeywords: Array.isArray(parsed.missingKeywords)
-            ? parsed.missingKeywords.filter(
-                (k: any) => typeof k === "string"
-              )
+            ? parsed.missingKeywords.filter((k: any) => typeof k === "string")
             : [],
           improvements: Array.isArray(parsed.improvements)
-            ? parsed.improvements.filter(
-                (i: any) => typeof i === "string"
-              )
+            ? parsed.improvements.filter((i: any) => typeof i === "string")
             : [],
         };
 
-        // Sanity check — must have a rewritten CV
         if (!result.rewrittenCv) {
-          console.error(`[/api/fix] ${model} returned empty rewrittenCv`);
           lastError = `No CV content from ${model}`;
           continue;
         }
 
-        console.log(`[/api/fix] ✅ Success with ${model}`);
-        return NextResponse.json(result);
+        // ---- 6. Increment free_fixes_used if this was a free fix ----
+        if (isFreeFix) {
+          await supabase
+            .from("profiles")
+            .update({ free_fixes_used: fixesUsed + 1 })
+            .eq("id", user.id);
+        }
+
+        return NextResponse.json({
+          ...result,
+          isFreeFix,
+          fixesRemaining: isFreeFix
+            ? Math.max(0, FREE_FIX_LIMIT - (fixesUsed + 1))
+            : 0,
+        });
       } catch (err: any) {
-        console.error(`[/api/fix] ${model} threw:`, err?.message);
+        console.error(`[${model}] threw:`, err?.message);
         lastError = err?.message || `Error with ${model}`;
-        continue; // try next model
+        continue;
       }
     }
 
-    // ---- All models failed ----
     return NextResponse.json(
       { error: `AI service unavailable. ${lastError}` },
       { status: 502 }
