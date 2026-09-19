@@ -2,7 +2,6 @@
   "name": "cvpro",
   "version": "0.1.0",
   "private": true,
-  "description": "CVPro — Your CV. Fixed. In 60 seconds. Made by PrimeWeb Designs",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -19,9 +18,9 @@
     "openai": "^4.55.0",
     "@paystack/inline-js": "^2.22.0",
     "pdfjs-dist": "^4.0.379",
-  "mammoth": "^1.7.0",
+    "mammoth": "^1.7.0",
     "@supabase/supabase-js": "^2.45.4",
-"@supabase/ssr": "^0.5.1"
+    "@supabase/ssr": "^0.5.1"
   },
   "devDependencies": {
     "typescript": "^5.5.4",
@@ -35,6 +34,6 @@
     "eslint-config-next": "14.2.5"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": ">=20"
   }
 }
