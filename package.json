@@ -20,6 +20,8 @@
     "@paystack/inline-js": "^2.22.0",
     "pdfjs-dist": "^4.0.379",
   "mammoth": "^1.7.0"
+    "@supabase/supabase-js": "^2.45.4",
+"@supabase/ssr": "^0.5.1"
   },
   "devDependencies": {
     "typescript": "^5.5.4",
