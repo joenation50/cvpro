@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 import { createServerSupabase } from "@/lib/supabase-server";
 
 export const runtime = "edge";
@@ -6,18 +7,17 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   try {
-    const supabase = createServerSupabase();
-
-    // 1. Auth
+    // 1. Auth via user's session (for admin verification)
+    const userSupabase = createServerSupabase();
     const {
       data: { user },
-    } = await supabase.auth.getUser();
+    } = await userSupabase.auth.getUser();
 
     if (!user || !user.email) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    // 2. Email allowlist
+    // 2. Email allowlist check
     const adminEmails = (process.env.ADMIN_EMAILS || "")
       .split(",")
       .map((e) => e.trim().toLowerCase())
@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Not authorized" }, { status: 403 });
     }
 
-    // 3. Password
+    // 3. Password check
     const body = await req.json().catch(() => ({}));
     const providedPassword = body?.password || "";
     const search = (body?.search || "").toString().trim();
@@ -47,8 +47,25 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 4. Build user query (with optional search)
-    let userQuery = supabase
+    // 4. Service role client — bypasses RLS to read ALL profiles
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!serviceKey) {
+      return NextResponse.json(
+        { error: "Service role key not configured" },
+        { status: 500 }
+      );
+    }
+
+    const adminSupabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      serviceKey,
+      {
+        auth: { persistSession: false, autoRefreshToken: false },
+      }
+    );
+
+    // 5. Fetch data with service role
+    let userQuery = adminSupabase
       .from("profiles")
       .select(
         "id, email, full_name, free_fixes_used, bonus_fixes, is_banned, last_login, created_at"
@@ -64,11 +81,9 @@ export async function POST(req: NextRequest) {
 
     const [profilesRes, paymentsRes] = await Promise.all([
       userQuery,
-      supabase
+      adminSupabase
         .from("payments")
-        .select(
-          "id, user_id, template_id, amount_paid, status, created_at"
-        )
+        .select("id, user_id, template_id, amount_paid, status, created_at")
         .order("created_at", { ascending: false })
         .limit(200),
     ]);
@@ -76,7 +91,7 @@ export async function POST(req: NextRequest) {
     if (profilesRes.error) {
       console.error("Profiles fetch error:", profilesRes.error);
       return NextResponse.json(
-        { error: "Failed to fetch profiles" },
+        { error: "Failed to fetch profiles: " + profilesRes.error.message },
         { status: 500 }
       );
     }
@@ -84,7 +99,7 @@ export async function POST(req: NextRequest) {
     const profiles = profilesRes.data || [];
     const payments = paymentsRes.data || [];
 
-    // 5. Compute totals
+    // 6. Compute totals
     const totalUsers = profiles.length;
     const totalFixes = profiles.reduce(
       (sum, p) => sum + (p.free_fixes_used || 0) + (p.bonus_fixes || 0),
@@ -96,26 +111,25 @@ export async function POST(req: NextRequest) {
       0
     );
 
-    // 6. Per-template revenue
-    const revenueByTemplate: Record<string, { count: number; total: number }> = {};
+    // 7. Revenue per template
+    const revenueByTemplate: Record<
+      string,
+      { count: number; total: number }
+    > = {};
     successPayments.forEach((p) => {
       const t = p.template_id || "unknown";
-      if (!revenueByTemplate[t]) {
-        revenueByTemplate[t] = { count: 0, total: 0 };
-      }
+      if (!revenueByTemplate[t]) revenueByTemplate[t] = { count: 0, total: 0 };
       revenueByTemplate[t].count += 1;
       revenueByTemplate[t].total += p.amount_paid || 0;
     });
 
-    // 7. Last 7 days stats (signups + fixes)
+    // 8. Last 7 days stats
     const now = new Date();
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-
     const dailyStats: Record<string, { signups: number; revenue: number }> = {};
     for (let i = 6; i >= 0; i--) {
       const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
-      const key = d.toISOString().split("T")[0];
-      dailyStats[key] = { signups: 0, revenue: 0 };
+      dailyStats[d.toISOString().split("T")[0]] = { signups: 0, revenue: 0 };
     }
 
     profiles.forEach((p) => {
