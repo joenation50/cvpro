@@ -1,11 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 
-export default function LoginPage() {
+// ---------------------------------------------------------------------------
+// Inner component — uses useSearchParams (must be inside Suspense)
+// ---------------------------------------------------------------------------
+function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const supabase = getSupabase();
@@ -238,5 +241,23 @@ export default function LoginPage() {
         </Link>
       </p>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Page wrapper — required for useSearchParams()
+// ---------------------------------------------------------------------------
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="rounded-2xl bg-navy/40 p-6 ring-1 ring-white/10 text-center">
+          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-white/20 border-t-cyan" />
+          <p className="mt-4 text-sm text-stone">Loading...</p>
+        </div>
+      }
+    >
+      <LoginForm />
+    </Suspense>
   );
 }
