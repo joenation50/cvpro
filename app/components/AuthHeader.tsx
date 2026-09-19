@@ -37,7 +37,6 @@ export function AuthHeader() {
 
     load();
 
-    // Listen for auth changes
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -97,6 +96,16 @@ export function AuthHeader() {
               }`}
             >
               Cover Letter
+            </Link>
+            <Link
+              href="/interview-prep"
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                isActive("/interview-prep")
+                  ? "bg-white/10 text-white"
+                  : "text-stone hover:text-white"
+              }`}
+            >
+              Interview Prep
             </Link>
           </nav>
         )}
@@ -158,6 +167,16 @@ export function AuthHeader() {
             }`}
           >
             Cover Letter
+          </Link>
+          <Link
+            href="/interview-prep"
+            className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+              isActive("/interview-prep")
+                ? "bg-white/10 text-white"
+                : "text-stone hover:text-white"
+            }`}
+          >
+            Interview Prep
           </Link>
           <Link
             href="/account"
