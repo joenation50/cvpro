@@ -280,19 +280,6 @@ export default function Home() {
   return (
     <div className="mx-auto w-full max-w-2xl px-4 pb-20">
       {/* ============ STICKY HEADER ============ */}
-      <header className="sticky top-0 z-40 -mx-4 mb-4 border-b border-white/5 bg-ink/80 px-4 py-3 backdrop-blur-xl">
-        <div className="flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2">
-            <img
-              src="/favicon-192.png"
-              alt="CVPro"
-              className="h-8 w-8 rounded-lg"
-            />
-            <span className="font-grotesk text-lg font-bold tracking-tight">
-              <span className="text-white">CV</span>
-              <span className="text-cyan">Pro</span>
-            </span>
-          </Link>
           <AuthHeader />
         </div>
       </header>
