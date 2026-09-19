@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 import { createServerSupabase } from "@/lib/supabase-server";
 
 export const runtime = "edge";
@@ -6,18 +7,17 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   try {
-    const supabase = createServerSupabase();
-
-    // Auth
+    // 1. Auth via session
+    const userSupabase = createServerSupabase();
     const {
       data: { user },
-    } = await supabase.auth.getUser();
+    } = await userSupabase.auth.getUser();
 
     if (!user || !user.email) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    // Email allowlist
+    // 2. Email allowlist
     const adminEmails = (process.env.ADMIN_EMAILS || "")
       .split(",")
       .map((e) => e.trim().toLowerCase())
@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Not authorized" }, { status: 403 });
     }
 
-    // Password check
+    // 3. Password check
     const body = await req.json().catch(() => ({}));
     const providedPassword = body?.password || "";
     const adminPassword = process.env.ADMIN_PASSWORD || "";
@@ -46,8 +46,25 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Fetch current user data
-    const { data: targetUser, error: fetchError } = await supabase
+    // 4. Service role client
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!serviceKey) {
+      return NextResponse.json(
+        { error: "Service role key not configured" },
+        { status: 500 }
+      );
+    }
+
+    const adminSupabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      serviceKey,
+      {
+        auth: { persistSession: false, autoRefreshToken: false },
+      }
+    );
+
+    // 5. Fetch current target user
+    const { data: targetUser, error: fetchError } = await adminSupabase
       .from("profiles")
       .select("id, free_fixes_used, bonus_fixes, is_banned")
       .eq("id", targetUserId)
@@ -57,7 +74,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    // Route action
+    // 6. Route action
     if (action === "grant_fixes") {
       const amount = parseInt(body?.amount || "3", 10);
       if (amount < 1 || amount > 100) {
@@ -68,7 +85,7 @@ export async function POST(req: NextRequest) {
       }
 
       const newBonus = (targetUser.bonus_fixes || 0) + amount;
-      const { error } = await supabase
+      const { error } = await adminSupabase
         .from("profiles")
         .update({ bonus_fixes: newBonus })
         .eq("id", targetUserId);
@@ -78,7 +95,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "reset_fixes") {
-      const { error } = await supabase
+      const { error } = await adminSupabase
         .from("profiles")
         .update({ free_fixes_used: 0, bonus_fixes: 0 })
         .eq("id", targetUserId);
@@ -88,7 +105,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "ban") {
-      const { error } = await supabase
+      const { error } = await adminSupabase
         .from("profiles")
         .update({ is_banned: true })
         .eq("id", targetUserId);
@@ -98,7 +115,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "unban") {
-      const { error } = await supabase
+      const { error } = await adminSupabase
         .from("profiles")
         .update({ is_banned: false })
         .eq("id", targetUserId);
