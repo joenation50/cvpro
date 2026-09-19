@@ -47,14 +47,17 @@ export async function POST(req: NextRequest) {
   try {
     const supabase = createServerSupabase();
 
-    // ---- 1. Require auth ----
+    // ---- 1. Auth required ----
     const {
       data: { user },
     } = await supabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json(
-        { error: "Please log in to fix your CV.", code: "AUTH_REQUIRED" },
+        {
+          error: "Please log in to fix your CV.",
+          code: "AUTH_REQUIRED",
+        },
         { status: 401 }
       );
     }
@@ -69,12 +72,12 @@ export async function POST(req: NextRequest) {
     const fixesUsed = profile?.free_fixes_used ?? 0;
     const isFreeFix = fixesUsed < FREE_FIX_LIMIT;
 
-    // ---- 3. Parse body ----
+    // ---- 3. Parse + validate body ----
     const body = await req.json();
     const cv = body?.cv;
     const job = body?.jobDescription || body?.job;
     const template = body?.template || "classic";
-    const paidFix = body?.paidFix === true; // set by client after payment
+    const paidFix = body?.paidFix === true;
 
     if (!cv || !job) {
       return NextResponse.json(
@@ -97,7 +100,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- 4. Enforce payment if free fixes exhausted ----
+    // ---- 4. Payment gate ----
     if (!isFreeFix && !paidFix) {
       return NextResponse.json(
         {
@@ -108,7 +111,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- 5. Run AI ----
+    // ---- 5. Check OpenRouter key ----
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
@@ -121,8 +124,11 @@ export async function POST(req: NextRequest) {
 
     let lastError = "All models failed";
 
+    // ---- 6. Try each free model with fallback ----
     for (const model of MODELS) {
       try {
+        console.log(`[/api/fix] Trying model: ${model}`);
+
         const res = await fetch(OPENROUTER_URL, {
           method: "POST",
           headers: {
@@ -143,20 +149,27 @@ export async function POST(req: NextRequest) {
           signal: AbortSignal.timeout(9000),
         });
 
+        // Model rejected — try next
         if (!res.ok) {
           const errText = await res.text();
-          console.error(`[${model}] HTTP ${res.status}:`, errText.slice(0, 200));
+          console.error(
+            `[/api/fix] ${model} HTTP ${res.status}:`,
+            errText.slice(0, 200)
+          );
           lastError = `Model ${model} failed: ${res.status}`;
           continue;
         }
 
         const data = await res.json();
         const raw = data?.choices?.[0]?.message?.content;
+
         if (!raw || typeof raw !== "string") {
+          console.error(`[/api/fix] ${model} returned empty content`);
           lastError = `Empty response from ${model}`;
           continue;
         }
 
+        // Strip markdown fences and extract JSON
         const cleaned = raw
           .replace(/^```json\s*/i, "")
           .replace(/^```\s*/i, "")
@@ -173,10 +186,15 @@ export async function POST(req: NextRequest) {
         try {
           parsed = JSON.parse(jsonString);
         } catch {
+          console.error(
+            `[/api/fix] ${model} malformed JSON:`,
+            jsonString.slice(0, 200)
+          );
           lastError = `Malformed JSON from ${model}`;
           continue;
         }
 
+        // ---- 7. Normalize result ----
         const result = {
           atsScore:
             typeof parsed.atsScore === "number"
@@ -192,18 +210,28 @@ export async function POST(req: NextRequest) {
             : [],
         };
 
+        // Sanity check — must have a rewritten CV
         if (!result.rewrittenCv) {
+          console.error(`[/api/fix] ${model} returned empty rewrittenCv`);
           lastError = `No CV content from ${model}`;
           continue;
         }
 
-        // ---- 6. Increment free_fixes_used if this was a free fix ----
+        // ---- 8. Increment free_fixes_used if this was a free fix ----
         if (isFreeFix) {
-          await supabase
+          const { error: updateErr } = await supabase
             .from("profiles")
             .update({ free_fixes_used: fixesUsed + 1 })
             .eq("id", user.id);
+
+          if (updateErr) {
+            console.error("[/api/fix] Failed to increment free_fixes_used:", updateErr);
+            // Don't fail the request — the user still gets their CV.
+            // Just log it. (Next request might re-serve a free fix.)
+          }
         }
+
+        console.log(`[/api/fix] ✅ Success with ${model}`);
 
         return NextResponse.json({
           ...result,
@@ -213,12 +241,13 @@ export async function POST(req: NextRequest) {
             : 0,
         });
       } catch (err: any) {
-        console.error(`[${model}] threw:`, err?.message);
+        console.error(`[/api/fix] ${model} threw:`, err?.message);
         lastError = err?.message || `Error with ${model}`;
         continue;
       }
     }
 
+    // ---- All models failed ----
     return NextResponse.json(
       { error: `AI service unavailable. ${lastError}` },
       { status: 502 }
