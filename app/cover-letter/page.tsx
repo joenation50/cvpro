@@ -221,7 +221,7 @@ export default function CoverLetterPage() {
 
   return (
     <div className="mx-auto w-full max-w-2xl px-4 pb-20">
-      <AppHeader />
+      <AuthHeader />
 
       {/* ============ HERO ============ */}
       <section className="pt-4 pb-8 text-center">
