@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { AppHeader } from "@/components/AppHeader";
+import { AuthHeader } from "@/components/AuthHeader";
 import { FileUploader } from "@/components/FileUploader";
 import { PaywallModal } from "@/components/PaywallModal";
 import { getSupabase } from "@/lib/supabase";
