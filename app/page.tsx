@@ -7,6 +7,7 @@ import { pdf } from "@react-pdf/renderer";
 import { CvDocument, type TemplateId } from "./components/CvDocument";
 import { FileUploader } from "./components/FileUploader";
 import { AuthHeader } from "./components/AuthHeader";
+import { PaywallModal } from "./components/PaywallModal";
 import { getSupabase } from "./lib/supabase";
 import {
   TEMPLATES,
@@ -15,7 +16,6 @@ import {
   PREMIUM_TEMPLATES,
   FREE_FIX_LIMIT,
   formatNaira,
-  type TemplateInfo,
 } from "./lib/useCredits";
 
 type FixResult = {
@@ -114,7 +114,7 @@ export default function Home() {
   const router = useRouter();
   const supabase = getSupabase();
 
-  // Form
+  // ---- Form state ----
   const [cv, setCv] = useState("");
   const [jobDescription, setJobDescription] = useState("");
   const [loading, setLoading] = useState(false);
@@ -123,16 +123,18 @@ export default function Home() {
   const [pdfLoading, setPdfLoading] = useState(false);
   const [template, setTemplate] = useState<TemplateId>("classic");
 
-  // Input mode
+  // ---- Input mode ----
   const [cvMode, setCvMode] = useState<"paste" | "upload">("paste");
   const [jobMode, setJobMode] = useState<"paste" | "upload">("paste");
   const [uploadedCvName, setUploadedCvName] = useState<string | null>(null);
   const [uploadedJobName, setUploadedJobName] = useState<string | null>(null);
 
-  // Auth
+  // ---- Auth + credits ----
   const [loggedIn, setLoggedIn] = useState<boolean | null>(null);
   const [fixesLeft, setFixesLeft] = useState<number>(FREE_FIX_LIMIT);
+  const [showPaywall, setShowPaywall] = useState(false);
 
+  // ---- Auth check + free-fix count ----
   useEffect(() => {
     async function checkAuth() {
       const {
@@ -158,20 +160,16 @@ export default function Home() {
   }, [supabase]);
 
   // ---- Submit ----
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent, paidFix = false) {
     e.preventDefault();
 
-    // If not logged in, send to signup
     if (!loggedIn) {
       router.push("/signup");
       return;
     }
 
-    // If no free fixes left, show paywall
-    if (fixesLeft <= 0) {
-      setError(
-        "You've used your 3 free fixes. Pay ₦1,000+ per fix to continue. (Payment coming soon)"
-      );
+    if (fixesLeft <= 0 && !paidFix) {
+      setShowPaywall(true);
       return;
     }
 
@@ -183,7 +181,7 @@ export default function Home() {
       const res = await fetch("/api/fix", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cv, jobDescription, template }),
+        body: JSON.stringify({ cv, jobDescription, template, paidFix }),
       });
       const data = await res.json();
 
@@ -194,9 +192,8 @@ export default function Home() {
         }
         if (data.code === "PAYMENT_REQUIRED") {
           setFixesLeft(0);
-          throw new Error(
-            "You've used your 3 free fixes. Payment coming soon."
-          );
+          setShowPaywall(true);
+          return;
         }
         throw new Error(data.error || "Something went wrong.");
       }
@@ -222,7 +219,15 @@ export default function Home() {
     }
   }
 
-  // ---- PDF ----
+  // ---- Paywall callback ----
+  async function handlePaywallPaid(selectedTemplate: TemplateId) {
+    setShowPaywall(false);
+    setTemplate(selectedTemplate);
+    const fakeEvent = { preventDefault: () => {} } as React.FormEvent;
+    await handleSubmit(fakeEvent, true);
+  }
+
+  // ---- PDF download ----
   async function downloadPdf() {
     if (!result) return;
     setPdfLoading(true);
@@ -268,7 +273,6 @@ export default function Home() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  // ---- Render ----
   const scoreColor = result
     ? result.atsScore >= 75
       ? "text-emerald"
@@ -279,19 +283,14 @@ export default function Home() {
 
   return (
     <div className="mx-auto w-full max-w-2xl px-4 pb-20">
-      {/* ============ STICKY HEADER ============ */}
-          <AuthHeader />
-        </div>
-      </header>
+      <AuthHeader />
 
       {/* ============ HERO ============ */}
       <section className="pt-6 pb-10 text-center">
         {loggedIn && (
           <div
             className={`inline-block rounded-full px-3 py-1 text-xs font-semibold mb-4 ${
-              fixesLeft > 0
-                ? "bg-cyan/15 text-cyan"
-                : "bg-coral/15 text-coral"
+              fixesLeft > 0 ? "bg-cyan/15 text-cyan" : "bg-coral/15 text-coral"
             }`}
           >
             {fixesLeft > 0
@@ -299,7 +298,7 @@ export default function Home() {
               : "🔒 Free fixes used — pay ₦1,000+ per fix"}
           </div>
         )}
-        {!loggedIn && (
+        {!loggedIn && loggedIn !== null && (
           <div className="inline-block rounded-full bg-cyan/15 px-3 py-1 text-xs font-semibold text-cyan mb-4">
             🎁 3 free fixes when you sign up
           </div>
@@ -350,15 +349,13 @@ export default function Home() {
       {/* ============ FIXER FORM ============ */}
       {!result && (
         <form
-          onSubmit={handleSubmit}
+          onSubmit={(e) => handleSubmit(e)}
           className="rounded-2xl bg-navy/40 p-5 ring-1 ring-white/10 space-y-5"
         >
           {/* CV INPUT */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <label className="text-sm font-medium text-white">
-                Your CV
-              </label>
+              <label className="text-sm font-medium text-white">Your CV</label>
               <div className="flex gap-1 rounded-lg bg-white/5 p-0.5 ring-1 ring-white/10">
                 <button
                   type="button"
@@ -661,7 +658,9 @@ export default function Home() {
             <h2 className="font-grotesk text-lg font-bold text-white">
               Your ATS Score
             </h2>
-            <span className={`font-grotesk text-4xl font-extrabold ${scoreColor}`}>
+            <span
+              className={`font-grotesk text-4xl font-extrabold ${scoreColor}`}
+            >
               {result.atsScore}%
             </span>
           </div>
@@ -770,7 +769,6 @@ export default function Home() {
         </p>
 
         <div className="space-y-4">
-          {/* Free */}
           <div>
             <div className="text-[10px] uppercase tracking-wider text-stone mb-2">
               Free with signup
@@ -782,7 +780,6 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Standard */}
           <div>
             <div className="text-[10px] uppercase tracking-wider text-stone mb-2">
               Standard
@@ -794,7 +791,6 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Premium */}
           <div>
             <div className="text-[10px] uppercase tracking-wider text-stone mb-2">
               💎 Premium
@@ -842,9 +838,7 @@ export default function Home() {
         <div className="grid grid-cols-1 gap-3">
           <div className="rounded-2xl bg-navy/40 p-5 ring-1 ring-white/10">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="font-grotesk font-bold text-white">
-                🟢 Free
-              </h3>
+              <h3 className="font-grotesk font-bold text-white">🟢 Free</h3>
               <span className="font-grotesk text-2xl font-extrabold text-white">
                 ₦0
               </span>
@@ -939,6 +933,15 @@ export default function Home() {
           {loggedIn ? "⚡ Fix My CV Now" : "✨ Sign up free"}
         </Link>
       </section>
+
+      {/* ============ PAYWALL ============ */}
+      <PaywallModal
+        open={showPaywall}
+        onClose={() => setShowPaywall(false)}
+        onPaid={handlePaywallPaid}
+        feature="cv"
+        defaultTemplate={template}
+      />
     </div>
   );
 }
