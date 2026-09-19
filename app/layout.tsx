@@ -180,12 +180,6 @@ export default function RootLayout({
                 href="/refund"
                 className="transition-colors hover:text-cyan"
               >
-                Refunds
-              </Link>
-              <a
-                href="mailto:hello@cvpro.app"
-                className="transition-colors hover:text-cyan"
-              >
                 Contact
               </a>
             </nav>
