@@ -85,7 +85,17 @@ export function AuthHeader() {
                   : "text-stone hover:text-white"
               }`}
             >
-              CV Fixer
+              Fix CV
+            </Link>
+            <Link
+              href="/build-cv"
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                isActive("/build-cv")
+                  ? "bg-white/10 text-white"
+                  : "text-stone hover:text-white"
+              }`}
+            >
+              Build CV
             </Link>
             <Link
               href="/cover-letter"
@@ -105,7 +115,7 @@ export function AuthHeader() {
                   : "text-stone hover:text-white"
               }`}
             >
-              Interview Prep
+              Interview
             </Link>
           </nav>
         )}
@@ -147,7 +157,7 @@ export function AuthHeader() {
 
       {/* Mobile nav — horizontal scroll */}
       {user && (
-        <nav className="sm:hidden mt-2 flex items-center gap-1 overflow-x-auto -mx-1 px-1">
+        <nav className="sm:hidden mt-2 flex items-center gap-1 overflow-x-auto -mx-1 px-1 pb-1">
           <Link
             href="/"
             className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
@@ -156,7 +166,17 @@ export function AuthHeader() {
                 : "text-stone hover:text-white"
             }`}
           >
-            CV Fixer
+            Fix CV
+          </Link>
+          <Link
+            href="/build-cv"
+            className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+              isActive("/build-cv")
+                ? "bg-white/10 text-white"
+                : "text-stone hover:text-white"
+            }`}
+          >
+            Build CV
           </Link>
           <Link
             href="/cover-letter"
@@ -176,7 +196,7 @@ export function AuthHeader() {
                 : "text-stone hover:text-white"
             }`}
           >
-            Interview Prep
+            Interview
           </Link>
           <Link
             href="/account"
