@@ -15,7 +15,6 @@ import {
   STANDARD_TEMPLATES,
   PREMIUM_TEMPLATES,
   FREE_FIX_LIMIT,
-  formatNaira,
 } from "./lib/useCredits";
 
 type FixResult = {
@@ -43,8 +42,8 @@ const FEATURES = [
   },
   {
     icon: "📄",
-    title: "Upload or Paste",
-    desc: "PDF, Word, or text — no retyping needed.",
+    title: "Fix or Build",
+    desc: "Upload an existing CV — or build one from scratch.",
   },
   {
     icon: "🎨",
@@ -88,6 +87,10 @@ const FAQ = [
   {
     q: "Do I need an account to use CVPro?",
     a: "Yes, a free account. It takes 30 seconds to sign up and gives you 3 free CV fixes.",
+  },
+  {
+    q: "Do I need an existing CV to use CVPro?",
+    a: "No. You can either fix an existing CV, or build one from scratch by answering a few questions. Both count toward your 3 free uses.",
   },
   {
     q: "How much does it cost after the free fixes?",
@@ -149,12 +152,13 @@ export default function Home() {
 
       const { data: profile } = await supabase
         .from("profiles")
-        .select("free_fixes_used")
+        .select("free_fixes_used, bonus_fixes")
         .eq("id", user.id)
         .single();
 
       const used = profile?.free_fixes_used ?? 0;
-      setFixesLeft(Math.max(0, FREE_FIX_LIMIT - used));
+      const bonus = profile?.bonus_fixes ?? 0;
+      setFixesLeft(Math.max(0, FREE_FIX_LIMIT + bonus - used));
     }
     checkAuth();
   }, [supabase]);
@@ -294,13 +298,13 @@ export default function Home() {
             }`}
           >
             {fixesLeft > 0
-              ? `🎁 ${fixesLeft} free ${fixesLeft === 1 ? "fix" : "fixes"} left`
-              : "🔒 Free fixes used — pay ₦1,000+ per fix"}
+              ? `🎁 ${fixesLeft} free ${fixesLeft === 1 ? "use" : "uses"} left`
+              : "🔒 Free uses used — pay ₦1,000+ per fix"}
           </div>
         )}
         {!loggedIn && loggedIn !== null && (
           <div className="inline-block rounded-full bg-cyan/15 px-3 py-1 text-xs font-semibold text-cyan mb-4">
-            🎁 3 free fixes when you sign up
+            🎁 3 free uses when you sign up
           </div>
         )}
 
@@ -310,10 +314,37 @@ export default function Home() {
           <span className="text-cyan">Land the Job.</span>
         </h1>
         <p className="mt-4 text-sm text-stone sm:text-base max-w-md mx-auto">
-          Upload your CV and the job description. AI rewrites it to pass ATS and
-          match the role — in 60 seconds.
+          Fix an existing CV or build one from scratch. AI rewrites it to pass
+          ATS and match the role — in 60 seconds.
         </p>
-        <div className="mt-6 flex flex-wrap items-center justify-center gap-3 text-xs text-stone">
+
+        {/* Two mode buttons */}
+        <div className="mt-8 grid grid-cols-2 gap-3 max-w-md mx-auto">
+          <a
+            href="#fix"
+            className="rounded-xl bg-blue/10 p-4 ring-2 ring-blue text-left transition hover:bg-blue/20 active:scale-[0.98]"
+          >
+            <div className="text-2xl mb-1">📝</div>
+            <div className="text-sm font-bold text-white">Fix my CV</div>
+            <div className="text-[10px] text-stone mt-1">
+              I have an existing CV
+            </div>
+          </a>
+          <Link
+            href="/build-cv"
+            className="rounded-xl bg-cyan/10 p-4 ring-2 ring-cyan text-left transition hover:bg-cyan/20 active:scale-[0.98]"
+          >
+            <div className="text-2xl mb-1">✨</div>
+            <div className="text-sm font-bold text-white">
+              Build from scratch
+            </div>
+            <div className="text-[10px] text-stone mt-1">
+              No CV yet — help me make one
+            </div>
+          </Link>
+        </div>
+
+        <div className="mt-8 flex flex-wrap items-center justify-center gap-3 text-xs text-stone">
           <span>🇳🇬 Built for Nigeria</span>
           <span>·</span>
           <span>🔒 Data never stored</span>
@@ -349,8 +380,9 @@ export default function Home() {
       {/* ============ FIXER FORM ============ */}
       {!result && (
         <form
+          id="fix"
           onSubmit={(e) => handleSubmit(e)}
-          className="rounded-2xl bg-navy/40 p-5 ring-1 ring-white/10 space-y-5"
+          className="rounded-2xl bg-navy/40 p-5 ring-1 ring-white/10 space-y-5 scroll-mt-24"
         >
           {/* CV INPUT */}
           <div>
@@ -512,7 +544,6 @@ export default function Home() {
               Choose your template
             </label>
 
-            {/* Free */}
             <div className="mb-2">
               <div className="text-[10px] uppercase tracking-wider text-stone mb-1">
                 Free
@@ -543,7 +574,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Standard */}
             <div className="mb-2">
               <div className="text-[10px] uppercase tracking-wider text-stone mb-1">
                 Standard · ₦1,000 per fix
@@ -579,7 +609,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Premium */}
             <div>
               <div className="text-[10px] uppercase tracking-wider text-stone mb-1">
                 Premium · ₦1,500 per fix
@@ -832,7 +861,7 @@ export default function Home() {
           Simple Pricing
         </h2>
         <p className="mb-6 text-center text-xs text-stone">
-          No subscriptions. Pay per fix only when you need one.
+          No subscriptions. Pay per use — fix or build.
         </p>
 
         <div className="grid grid-cols-1 gap-3">
@@ -844,7 +873,7 @@ export default function Home() {
               </span>
             </div>
             <ul className="space-y-1.5 text-xs text-stone">
-              <li>✓ 3 free CV fixes</li>
+              <li>✓ 3 free uses (fix or build)</li>
               <li>✓ Classic + Minimal templates</li>
               <li>✓ ATS score + keyword analysis</li>
               <li>✓ PDF download</li>
@@ -860,11 +889,11 @@ export default function Home() {
                 ₦1,000
               </span>
             </div>
-            <p className="text-xs text-stone mb-3">per fix</p>
+            <p className="text-xs text-stone mb-3">per use</p>
             <ul className="space-y-1.5 text-xs text-stone">
               <li>✓ Modern template</li>
               <li>✓ Executive template</li>
-              <li>✓ All free templates (after free fixes)</li>
+              <li>✓ All free templates (after free uses)</li>
             </ul>
           </div>
 
@@ -877,7 +906,7 @@ export default function Home() {
                 ₦1,500
               </span>
             </div>
-            <p className="text-xs text-stone mb-3">per fix</p>
+            <p className="text-xs text-stone mb-3">per use</p>
             <ul className="space-y-1.5 text-xs text-stone">
               <li>✓ Creative, Corporate, Academic</li>
               <li>✓ Japa (Western format)</li>
@@ -915,23 +944,33 @@ export default function Home() {
       {/* ============ FINAL CTA ============ */}
       <section className="mt-14 rounded-2xl bg-gradient-to-br from-blue/20 to-cyan/10 p-6 ring-1 ring-blue/30 text-center">
         <h2 className="font-grotesk text-2xl font-bold text-white">
-          Ready to fix your CV?
+          Ready to get started?
         </h2>
         <p className="mt-2 text-sm text-stone">
-          Sign up free — get 3 fixes on the house.
+          Sign up free — get 3 fixes or builds on the house.
         </p>
-        <Link
-          href={loggedIn ? "#" : "/signup"}
-          onClick={(e) => {
-            if (loggedIn) {
-              e.preventDefault();
-              window.scrollTo({ top: 0, behavior: "smooth" });
-            }
-          }}
-          className="mt-5 inline-flex items-center gap-2 rounded-xl bg-blue px-6 py-3 font-grotesk font-bold text-white transition hover:bg-blue-hover active:scale-[0.98]"
-        >
-          {loggedIn ? "⚡ Fix My CV Now" : "✨ Sign up free"}
-        </Link>
+        <div className="mt-5 flex flex-col sm:flex-row items-center justify-center gap-3">
+          <Link
+            href={loggedIn ? "#fix" : "/signup"}
+            onClick={(e) => {
+              if (loggedIn) {
+                e.preventDefault();
+                document
+                  .getElementById("fix")
+                  ?.scrollIntoView({ behavior: "smooth" });
+              }
+            }}
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-blue px-6 py-3 font-grotesk font-bold text-white transition hover:bg-blue-hover active:scale-[0.98]"
+          >
+            {loggedIn ? "⚡ Fix My CV" : "✨ Sign up free"}
+          </Link>
+          <Link
+            href="/build-cv"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-cyan/20 px-6 py-3 font-grotesk font-bold text-white ring-1 ring-cyan transition hover:bg-cyan/30 active:scale-[0.98]"
+          >
+            ✨ Build from scratch
+          </Link>
+        </div>
       </section>
 
       {/* ============ PAYWALL ============ */}
