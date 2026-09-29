@@ -11,7 +11,8 @@ const MODELS = [
   "inclusionai/ling-3.0-flash-fin:free",
   "nvidia/nemotron-3.5-lightning:free",
   "liquid/lfm2.5-2.6b:free",
-  "meta-llama/llama-3.3-70b-instruct:free",
+  "qwen/qwen-2.5-72b-instruct:free",
+  "google/gemma-2-9b-it:free",
 ];
 
 const FREE_FIX_LIMIT = 3;
