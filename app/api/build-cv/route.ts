@@ -4,15 +4,12 @@ import { createServerSupabase } from "@/lib/supabase-server";
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
 const MODELS = [
-  "nvidia/nemotron-3-ultra:free",
-  "nvidia/nemotron-3-super:free",
-  "qwen/qwen-3.8-27b:free",
-  "google/gemma-4-26b-a4b:free",
-  "dots-studio/dots3-note-preview:free",
-  "liquid/lfm2.5-2.6b:free",
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
+  "gemma2-9b-it",
 ];
 
 const FREE_FIX_LIMIT = 3;
@@ -199,10 +196,10 @@ export async function POST(req: NextRequest) {
     }
 
     // 5. Check API key
-    const apiKey = process.env.OPENROUTER_API_KEY;
+    const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
-        { error: "Server configuration error." },
+        { error: "Server configuration error: missing API key." },
         { status: 500 }
       );
     }
@@ -291,15 +288,13 @@ Generate the complete CV. Return JSON per the specified format.`;
     // 7. Try models with fallback
     for (const model of MODELS) {
       try {
-        console.log(`[/api/build-cv] Trying model: ${model}`);
+        console.log(`[/api/build-cv] Trying Groq model: ${model}`);
 
-        const res = await fetch(OPENROUTER_URL, {
+        const res = await fetch(GROQ_URL, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${apiKey}`,
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://cvpro-2uy.pages.dev",
-            "X-Title": "CVPro Build CV",
           },
           body: JSON.stringify({
             model,
@@ -309,8 +304,9 @@ Generate the complete CV. Return JSON per the specified format.`;
             ],
             temperature: 0.5,
             max_tokens: 4000,
+            response_format: { type: "json_object" },
           }),
-          signal: AbortSignal.timeout(12000),
+          signal: AbortSignal.timeout(15000),
         });
 
         if (!res.ok) {
