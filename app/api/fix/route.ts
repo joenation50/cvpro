@@ -4,15 +4,12 @@ import { createServerSupabase } from "@/lib/supabase-server";
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
 const MODELS = [
-  "nvidia/nemotron-3-ultra:free",
-  "nvidia/nemotron-3-super:free",
-  "qwen/qwen-3.8-27b:free",
-  "google/gemma-4-26b-a4b:free",
-  "dots-studio/dots3-note-preview:free",
-  "liquid/lfm2.5-2.6b:free",
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
+  "gemma2-9b-it",
 ];
 
 const FREE_FIX_LIMIT = 3;
@@ -24,8 +21,8 @@ You receive a user's current CV and a target job description. You must:
 2. Rewrite the CV to maximize ATS match while preserving the user's real experience — never fabricate.
 3. Use strong action verbs (Led, Delivered, Engineered, Launched, Built, Drove).
 4. Quantify achievements wherever possible.
-5. Format for Nigerian recruiters — proper NYSC section, certifications, address format.
-6. Keep it concise. Nigerian recruiters scan fast.
+5. Format for Nigerian and Workdwide recruiters — proper NYSC section, certifications, address format.
+6. Keep it concise. Nigerian and Worldwide recruiters scan fast.
 
 You MUST respond with ONLY valid JSON (no markdown, no code blocks, no extra text) in this exact shape:
 {
@@ -66,12 +63,14 @@ export async function POST(req: NextRequest) {
     // ---- 2. Fetch profile + free-fix count ----
     const { data: profile } = await supabase
       .from("profiles")
-      .select("free_fixes_used")
+      .select("free_fixes_used, bonus_fixes")
       .eq("id", user.id)
       .single();
 
     const fixesUsed = profile?.free_fixes_used ?? 0;
-    const isFreeFix = fixesUsed < FREE_FIX_LIMIT;
+    const bonusFixes = profile?.bonus_fixes ?? 0;
+    const available = FREE_FIX_LIMIT + bonusFixes - fixesUsed;
+    const isFreeFix = available > 0;
 
     // ---- 3. Parse + validate body ----
     const body = await req.json();
@@ -112,8 +111,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- 5. Check OpenRouter key ----
-    const apiKey = process.env.OPENROUTER_API_KEY;
+    // ---- 5. Check Groq key ----
+    const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
         { error: "Server configuration error: missing API key." },
@@ -125,18 +124,16 @@ export async function POST(req: NextRequest) {
 
     let lastError = "All models failed";
 
-    // ---- 6. Try each free model with fallback ----
+    // ---- 6. Try each Groq model with fallback ----
     for (const model of MODELS) {
       try {
-        console.log(`[/api/fix] Trying model: ${model}`);
+        console.log(`[/api/fix] Trying Groq model: ${model}`);
 
-        const res = await fetch(OPENROUTER_URL, {
+        const res = await fetch(GROQ_URL, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${apiKey}`,
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://getcvpro.netlify.app",
-            "X-Title": "CVPro",
           },
           body: JSON.stringify({
             model,
@@ -146,8 +143,9 @@ export async function POST(req: NextRequest) {
             ],
             temperature: 0.4,
             max_tokens: 3000,
+            response_format: { type: "json_object" },
           }),
-          signal: AbortSignal.timeout(9000),
+          signal: AbortSignal.timeout(15000),
         });
 
         // Model rejected — try next
@@ -227,8 +225,6 @@ export async function POST(req: NextRequest) {
 
           if (updateErr) {
             console.error("[/api/fix] Failed to increment free_fixes_used:", updateErr);
-            // Don't fail the request — the user still gets their CV.
-            // Just log it. (Next request might re-serve a free fix.)
           }
         }
 
@@ -238,8 +234,8 @@ export async function POST(req: NextRequest) {
           ...result,
           isFreeFix,
           fixesRemaining: isFreeFix
-            ? Math.max(0, FREE_FIX_LIMIT - (fixesUsed + 1))
-            : 0,
+            ? Math.max(0, FREE_FIX_LIMIT + bonusFixes - (fixesUsed + 1))
+            : Math.max(0, FREE_FIX_LIMIT + bonusFixes - fixesUsed),
         });
       } catch (err: any) {
         console.error(`[/api/fix] ${model} threw:`, err?.message);
