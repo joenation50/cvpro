@@ -4,12 +4,8 @@ import { createServerSupabase } from "@/lib/supabase-server";
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-
-const MODELS = [
-  "llama-3.3-70b-versatile",
-  "llama-3.1-8b-instant",
-];
+const GEMINI_URL =
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent";
 
 const FREE_FIX_LIMIT = 3;
 
@@ -37,7 +33,7 @@ RULES:
 
 You MUST respond with ONLY valid JSON (no markdown, no code blocks, no extra text) in this exact shape:
 {
-  "readinessScore": <number 0-100, how prepared the candidate currently is based on CV vs job>,
+  "readinessScore": <number 0-100>,
   "questions": [
     {
       "category": "Behavioral" | "Technical" | "Nigeria-Specific",
@@ -78,9 +74,16 @@ export async function POST(req: NextRequest) {
     // ---- 2. Free-fix check ----
     const { data: profile } = await supabase
       .from("profiles")
-      .select("free_fixes_used, bonus_fixes")
+      .select("free_fixes_used, bonus_fixes, is_banned")
       .eq("id", user.id)
       .single();
+
+    if (profile?.is_banned) {
+      return NextResponse.json(
+        { error: "Your account has been suspended." },
+        { status: 403 }
+      );
+    }
 
     const fixesUsed = profile?.free_fixes_used ?? 0;
     const bonusFixes = profile?.bonus_fixes ?? 0;
@@ -126,139 +129,130 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- 5. AI call ----
-    const apiKey = process.env.GROQ_API_KEY;
+    // ---- 5. Check Gemini key ----
+    const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
-        { error: "Server configuration error: missing API key." },
+        { error: "Server configuration error: missing Gemini API key." },
         { status: 500 }
       );
     }
 
     const userMessage = `CANDIDATE'S CV:\n${cv}\n\n---\n\nTARGET JOB DESCRIPTION:\n${job}\n\n---\n\nGenerate the interview prep pack. Return the JSON as specified.`;
 
-    let lastError = "All models failed";
-
-    // ---- 6. Try each Groq model with fallback ----
-    for (const model of MODELS) {
-      try {
-        console.log(`[/api/interview-prep] Trying Groq model: ${model}`);
-
-        const res = await fetch(GROQ_URL, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
+    // ---- 6. Call Gemini ----
+    const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: SYSTEM_PROMPT + "\n\n---\n\n" + userMessage }],
           },
-          body: JSON.stringify({
-            model,
-            messages: [
-              { role: "system", content: SYSTEM_PROMPT },
-              { role: "user", content: userMessage },
-            ],
-            temperature: 0.5,
-            max_tokens: 4000,
-            response_format: { type: "json_object" },
-          }),
-          signal: AbortSignal.timeout(20000),
-        });
+        ],
+        generationConfig: {
+          temperature: 0.5,
+          maxOutputTokens: 8192,
+          responseMimeType: "application/json",
+        },
+      }),
+      signal: AbortSignal.timeout(45000),
+    });
 
-        if (!res.ok) {
-          const errText = await res.text();
-          console.error(`[interview-prep/${model}] HTTP ${res.status}:`, errText.slice(0, 200));
-          lastError = `Model ${model} failed: ${res.status}`;
-          continue;
-        }
-
-        const data = await res.json();
-        const raw = data?.choices?.[0]?.message?.content;
-        if (!raw || typeof raw !== "string") {
-          lastError = `Empty response from ${model}`;
-          continue;
-        }
-
-        const cleaned = raw
-          .replace(/^```json\s*/i, "")
-          .replace(/^```\s*/i, "")
-          .replace(/```$/i, "")
-          .trim();
-
-        let jsonString = cleaned;
-        if (!jsonString.startsWith("{")) {
-          const match = cleaned.match(/\{[\s\S]*\}/);
-          if (match) jsonString = match[0];
-        }
-
-        let parsed: any;
-        try {
-          parsed = JSON.parse(jsonString);
-        } catch {
-          lastError = `Malformed JSON from ${model}`;
-          continue;
-        }
-
-        // ---- 7. Normalize ----
-        const questions = Array.isArray(parsed.questions)
-          ? parsed.questions
-              .filter((q: any) => q && typeof q.question === "string")
-              .map((q: any) => ({
-                category: ["Behavioral", "Technical", "Nigeria-Specific"].includes(q.category)
-                  ? q.category
-                  : "Behavioral",
-                question: q.question,
-                answer: typeof q.answer === "string" ? q.answer : "",
-                coachTip: typeof q.coachTip === "string" ? q.coachTip : "",
-              }))
-          : [];
-
-        if (questions.length === 0) {
-          lastError = `No questions from ${model}`;
-          continue;
-        }
-
-        const result = {
-          readinessScore:
-            typeof parsed.readinessScore === "number"
-              ? Math.max(0, Math.min(100, Math.round(parsed.readinessScore)))
-              : 60,
-          questions,
-          topStrengths: Array.isArray(parsed.topStrengths)
-            ? parsed.topStrengths.filter((s: any) => typeof s === "string").slice(0, 5)
-            : [],
-          watchOuts: Array.isArray(parsed.watchOuts)
-            ? parsed.watchOuts.filter((w: any) => typeof w === "string").slice(0, 5)
-            : [],
-        };
-
-        // ---- 8. Increment free_fixes_used ----
-        if (isFreeFix) {
-          const { error: updateErr } = await supabase
-            .from("profiles")
-            .update({ free_fixes_used: fixesUsed + 1 })
-            .eq("id", user.id);
-          if (updateErr) console.error("Increment failed:", updateErr);
-        }
-
-        console.log(`[/api/interview-prep] ✅ Success with ${model}`);
-
-        return NextResponse.json({
-          ...result,
-          isFreeFix,
-          fixesRemaining: isFreeFix
-            ? Math.max(0, FREE_FIX_LIMIT + bonusFixes - (fixesUsed + 1))
-            : Math.max(0, FREE_FIX_LIMIT + bonusFixes - fixesUsed),
-        });
-      } catch (err: any) {
-        console.error(`[interview-prep/${model}] threw:`, err?.message);
-        lastError = err?.message || `Error with ${model}`;
-        continue;
-      }
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error("Gemini error:", res.status, errText.slice(0, 300));
+      return NextResponse.json(
+        { error: `AI service error: ${res.status}` },
+        { status: 502 }
+      );
     }
 
-    return NextResponse.json(
-      { error: `AI service unavailable. ${lastError}` },
-      { status: 502 }
-    );
+    const data = await res.json();
+    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!raw || typeof raw !== "string") {
+      return NextResponse.json(
+        { error: "Empty response from AI. Try again." },
+        { status: 502 }
+      );
+    }
+
+    // ---- 7. Parse JSON ----
+    const cleaned = raw
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/```$/i, "")
+      .trim();
+
+    let jsonString = cleaned;
+    if (!jsonString.startsWith("{")) {
+      const match = cleaned.match(/\{[\s\S]*\}/);
+      if (match) jsonString = match[0];
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(jsonString);
+    } catch {
+      return NextResponse.json(
+        { error: "Malformed AI response. Try again." },
+        { status: 502 }
+      );
+    }
+
+    // ---- 8. Normalize ----
+    const questions = Array.isArray(parsed.questions)
+      ? parsed.questions
+          .filter((q: any) => q && typeof q.question === "string")
+          .map((q: any) => ({
+            category: ["Behavioral", "Technical", "Nigeria-Specific"].includes(q.category)
+              ? q.category
+              : "Behavioral",
+            question: q.question,
+            answer: typeof q.answer === "string" ? q.answer : "",
+            coachTip: typeof q.coachTip === "string" ? q.coachTip : "",
+          }))
+      : [];
+
+    if (questions.length === 0) {
+      return NextResponse.json(
+        { error: "AI returned no questions. Try again." },
+        { status: 502 }
+      );
+    }
+
+    const result = {
+      readinessScore:
+        typeof parsed.readinessScore === "number"
+          ? Math.max(0, Math.min(100, Math.round(parsed.readinessScore)))
+          : 60,
+      questions,
+      topStrengths: Array.isArray(parsed.topStrengths)
+        ? parsed.topStrengths.filter((s: any) => typeof s === "string").slice(0, 5)
+        : [],
+      watchOuts: Array.isArray(parsed.watchOuts)
+        ? parsed.watchOuts.filter((w: any) => typeof w === "string").slice(0, 5)
+        : [],
+    };
+
+    // ---- 9. Increment free_fixes_used ----
+    if (isFreeFix) {
+      const { error: updateErr } = await supabase
+        .from("profiles")
+        .update({ free_fixes_used: fixesUsed + 1 })
+        .eq("id", user.id);
+      if (updateErr) console.error("Increment failed:", updateErr);
+    }
+
+    return NextResponse.json({
+      ...result,
+      isFreeFix,
+      fixesRemaining: isFreeFix
+        ? Math.max(0, FREE_FIX_LIMIT + bonusFixes - (fixesUsed + 1))
+        : Math.max(0, FREE_FIX_LIMIT + bonusFixes - fixesUsed),
+    });
   } catch (err: any) {
     console.error("[/api/interview-prep] Top-level error:", err?.message);
     return NextResponse.json(
