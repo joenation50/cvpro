@@ -4,8 +4,15 @@ import { createServerSupabase } from "@/lib/supabase-server";
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
-const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
+const GEMINI_MODELS = [
+  "gemini-3.8-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3-flash",
+];
+
+const GEMINI_BASE =
+  "https://generativelanguage.googleapis.com/v1beta/models";
 
 const FREE_FIX_LIMIT = 3;
 
@@ -62,7 +69,6 @@ export async function POST(req: NextRequest) {
   try {
     const supabase = createServerSupabase();
 
-    // ---- 1. Auth required ----
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -74,7 +80,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- 2. Free-fix check ----
     const { data: profile } = await supabase
       .from("profiles")
       .select("free_fixes_used, bonus_fixes, is_banned")
@@ -93,7 +98,6 @@ export async function POST(req: NextRequest) {
     const available = FREE_FIX_LIMIT + bonusFixes - fixesUsed;
     const isFreeFix = available > 0;
 
-    // ---- 3. Parse body ----
     const body = await req.json();
     const cv = body?.cv;
     const job = body?.jobDescription || body?.job;
@@ -130,7 +134,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- 4. Payment gate ----
     if (!isFreeFix && !paidFix) {
       return NextResponse.json(
         {
@@ -141,7 +144,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- 5. Check Gemini key ----
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
@@ -157,46 +159,67 @@ export async function POST(req: NextRequest) {
 
     const userMessage = `APPLICANT'S CV:\n${cv}\n\n---\n\nTARGET JOB DESCRIPTION:\n${job}${companyLine}\n\n---\n\nTONE: ${tone}\nTONE GUIDE: ${toneGuide}\n\nWrite the cover letter. Return the JSON as specified.`;
 
-    // ---- 6. Call Gemini ----
-    const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [
+    let lastError = "All Gemini models failed";
+    let raw: string | null = null;
+
+    for (const model of GEMINI_MODELS) {
+      try {
+        console.log(`[/api/cover-letter] Trying Gemini model: ${model}`);
+
+        const res = await fetch(
+          `${GEMINI_BASE}/${model}:generateContent?key=${apiKey}`,
           {
-            role: "user",
-            parts: [{ text: SYSTEM_PROMPT + "\n\n---\n\n" + userMessage }],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.6,
-          maxOutputTokens: 2048,
-          responseMimeType: "application/json",
-        },
-      }),
-      signal: AbortSignal.timeout(30000),
-    });
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [
+                {
+                  role: "user",
+                  parts: [{ text: SYSTEM_PROMPT + "\n\n---\n\n" + userMessage }],
+                },
+              ],
+              generationConfig: {
+                temperature: 0.6,
+                maxOutputTokens: 2048,
+                responseMimeType: "application/json",
+              },
+            }),
+            signal: AbortSignal.timeout(45000),
+          }
+        );
 
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error("Gemini error:", res.status, errText.slice(0, 300));
+        if (!res.ok) {
+          const errText = await res.text();
+          console.error(`[${model}] HTTP ${res.status}:`, errText.slice(0, 200));
+          lastError = `${model} failed: ${res.status}`;
+          continue;
+        }
+
+        const data = await res.json();
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+        if (!text || typeof text !== "string") {
+          lastError = `${model} returned empty`;
+          continue;
+        }
+
+        raw = text;
+        console.log(`[/api/cover-letter] ✅ Success with ${model}`);
+        break;
+      } catch (err: any) {
+        console.error(`[${model}] threw:`, err?.message);
+        lastError = err?.message || `Error with ${model}`;
+        continue;
+      }
+    }
+
+    if (!raw) {
       return NextResponse.json(
-        { error: `AI service error: ${res.status}` },
+        { error: `AI service unavailable. ${lastError}` },
         { status: 502 }
       );
     }
 
-    const data = await res.json();
-    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (!raw || typeof raw !== "string") {
-      return NextResponse.json(
-        { error: "Empty response from AI. Try again." },
-        { status: 502 }
-      );
-    }
-
-    // ---- 7. Parse JSON ----
     const cleaned = raw
       .replace(/^```json\s*/i, "")
       .replace(/^```\s*/i, "")
@@ -219,7 +242,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- 8. Normalize ----
     const coverLetter =
       typeof parsed.coverLetter === "string" ? parsed.coverLetter : "";
 
@@ -241,7 +263,6 @@ export async function POST(req: NextRequest) {
         : [],
     };
 
-    // ---- 9. Increment free_fixes_used ----
     if (isFreeFix) {
       const { error: updateErr } = await supabase
         .from("profiles")
