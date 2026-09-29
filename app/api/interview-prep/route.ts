@@ -4,15 +4,12 @@ import { createServerSupabase } from "@/lib/supabase-server";
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
 const MODELS = [
-  "nvidia/nemotron-3-ultra:free",
-  "nvidia/nemotron-3-super:free",
-  "qwen/qwen-3.8-27b:free",
-  "google/gemma-4-26b-a4b:free",
-  "dots-studio/dots3-note-preview:free",
-  "liquid/lfm2.5-2.6b:free",
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
+  "gemma2-9b-it",
 ];
 
 const FREE_FIX_LIMIT = 3;
@@ -82,12 +79,14 @@ export async function POST(req: NextRequest) {
     // ---- 2. Free-fix check ----
     const { data: profile } = await supabase
       .from("profiles")
-      .select("free_fixes_used")
+      .select("free_fixes_used, bonus_fixes")
       .eq("id", user.id)
       .single();
 
     const fixesUsed = profile?.free_fixes_used ?? 0;
-    const isFreeFix = fixesUsed < FREE_FIX_LIMIT;
+    const bonusFixes = profile?.bonus_fixes ?? 0;
+    const available = FREE_FIX_LIMIT + bonusFixes - fixesUsed;
+    const isFreeFix = available > 0;
 
     // ---- 3. Parse + validate ----
     const body = await req.json();
@@ -129,7 +128,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ---- 5. AI call ----
-    const apiKey = process.env.OPENROUTER_API_KEY;
+    const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
         { error: "Server configuration error: missing API key." },
@@ -141,15 +140,16 @@ export async function POST(req: NextRequest) {
 
     let lastError = "All models failed";
 
+    // ---- 6. Try each Groq model with fallback ----
     for (const model of MODELS) {
       try {
-        const res = await fetch(OPENROUTER_URL, {
+        console.log(`[/api/interview-prep] Trying Groq model: ${model}`);
+
+        const res = await fetch(GROQ_URL, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${apiKey}`,
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://getcvpro.netlify.app",
-            "X-Title": "CVPro Interview Prep",
           },
           body: JSON.stringify({
             model,
@@ -159,8 +159,9 @@ export async function POST(req: NextRequest) {
             ],
             temperature: 0.5,
             max_tokens: 4000,
+            response_format: { type: "json_object" },
           }),
-          signal: AbortSignal.timeout(9000),
+          signal: AbortSignal.timeout(20000),
         });
 
         if (!res.ok) {
@@ -197,7 +198,7 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        // ---- 6. Normalize ----
+        // ---- 7. Normalize ----
         const questions = Array.isArray(parsed.questions)
           ? parsed.questions
               .filter((q: any) => q && typeof q.question === "string")
@@ -230,7 +231,7 @@ export async function POST(req: NextRequest) {
             : [],
         };
 
-        // ---- 7. Increment free_fixes_used ----
+        // ---- 8. Increment free_fixes_used ----
         if (isFreeFix) {
           const { error: updateErr } = await supabase
             .from("profiles")
@@ -239,12 +240,14 @@ export async function POST(req: NextRequest) {
           if (updateErr) console.error("Increment failed:", updateErr);
         }
 
+        console.log(`[/api/interview-prep] ✅ Success with ${model}`);
+
         return NextResponse.json({
           ...result,
           isFreeFix,
           fixesRemaining: isFreeFix
-            ? Math.max(0, FREE_FIX_LIMIT - (fixesUsed + 1))
-            : 0,
+            ? Math.max(0, FREE_FIX_LIMIT + bonusFixes - (fixesUsed + 1))
+            : Math.max(0, FREE_FIX_LIMIT + bonusFixes - fixesUsed),
         });
       } catch (err: any) {
         console.error(`[interview-prep/${model}] threw:`, err?.message);
