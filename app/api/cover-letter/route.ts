@@ -4,12 +4,8 @@ import { createServerSupabase } from "@/lib/supabase-server";
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-
-const MODELS = [
-  "llama-3.3-70b-versatile",
-  "llama-3.1-8b-instant",
-];
+const GEMINI_URL =
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent";
 
 const FREE_FIX_LIMIT = 3;
 
@@ -78,12 +74,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- 2. Check free fix count ----
+    // ---- 2. Free-fix check ----
     const { data: profile } = await supabase
       .from("profiles")
-      .select("free_fixes_used, bonus_fixes")
+      .select("free_fixes_used, bonus_fixes, is_banned")
       .eq("id", user.id)
       .single();
+
+    if (profile?.is_banned) {
+      return NextResponse.json(
+        { error: "Your account has been suspended." },
+        { status: 403 }
+      );
+    }
 
     const fixesUsed = profile?.free_fixes_used ?? 0;
     const bonusFixes = profile?.bonus_fixes ?? 0;
@@ -127,7 +130,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- 4. Enforce payment if free fixes exhausted ----
+    // ---- 4. Payment gate ----
     if (!isFreeFix && !paidFix) {
       return NextResponse.json(
         {
@@ -138,11 +141,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---- 5. Build AI request ----
-    const apiKey = process.env.GROQ_API_KEY;
+    // ---- 5. Check Gemini key ----
+    const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
-        { error: "Server configuration error: missing API key." },
+        { error: "Server configuration error: missing Gemini API key." },
         { status: 500 }
       );
     }
@@ -154,114 +157,106 @@ export async function POST(req: NextRequest) {
 
     const userMessage = `APPLICANT'S CV:\n${cv}\n\n---\n\nTARGET JOB DESCRIPTION:\n${job}${companyLine}\n\n---\n\nTONE: ${tone}\nTONE GUIDE: ${toneGuide}\n\nWrite the cover letter. Return the JSON as specified.`;
 
-    let lastError = "All models failed";
-
-    // ---- 6. Try each model with fallback ----
-    for (const model of MODELS) {
-      try {
-        console.log(`[/api/cover-letter] Trying Groq model: ${model}`);
-
-        const res = await fetch(GROQ_URL, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
+    // ---- 6. Call Gemini ----
+    const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: SYSTEM_PROMPT + "\n\n---\n\n" + userMessage }],
           },
-          body: JSON.stringify({
-            model,
-            messages: [
-              { role: "system", content: SYSTEM_PROMPT },
-              { role: "user", content: userMessage },
-            ],
-            temperature: 0.6,
-            max_tokens: 2000,
-            response_format: { type: "json_object" },
-          }),
-          signal: AbortSignal.timeout(15000),
-        });
+        ],
+        generationConfig: {
+          temperature: 0.6,
+          maxOutputTokens: 2048,
+          responseMimeType: "application/json",
+        },
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
 
-        if (!res.ok) {
-          const errText = await res.text();
-          console.error(`[cover-letter/${model}] HTTP ${res.status}:`, errText.slice(0, 200));
-          lastError = `Model ${model} failed: ${res.status}`;
-          continue;
-        }
-
-        const data = await res.json();
-        const raw = data?.choices?.[0]?.message?.content;
-        if (!raw || typeof raw !== "string") {
-          lastError = `Empty response from ${model}`;
-          continue;
-        }
-
-        // Strip markdown fences and extract JSON
-        const cleaned = raw
-          .replace(/^```json\s*/i, "")
-          .replace(/^```\s*/i, "")
-          .replace(/```$/i, "")
-          .trim();
-
-        let jsonString = cleaned;
-        if (!jsonString.startsWith("{")) {
-          const match = cleaned.match(/\{[\s\S]*\}/);
-          if (match) jsonString = match[0];
-        }
-
-        let parsed: any;
-        try {
-          parsed = JSON.parse(jsonString);
-        } catch {
-          console.error(`[cover-letter/${model}] malformed JSON:`, jsonString.slice(0, 200));
-          lastError = `Malformed JSON from ${model}`;
-          continue;
-        }
-
-        // ---- 7. Normalize result ----
-        const coverLetter =
-          typeof parsed.coverLetter === "string" ? parsed.coverLetter : "";
-
-        if (!coverLetter || coverLetter.length < 100) {
-          lastError = `No cover letter content from ${model}`;
-          continue;
-        }
-
-        const result = {
-          coverLetter,
-          wordCount:
-            typeof parsed.wordCount === "number"
-              ? parsed.wordCount
-              : coverLetter.split(/\s+/).filter(Boolean).length,
-          highlights: Array.isArray(parsed.highlights)
-            ? parsed.highlights.filter((h: any) => typeof h === "string")
-            : [],
-        };
-
-        // ---- 8. Increment free_fixes_used if this was a free fix ----
-        if (isFreeFix) {
-          await supabase
-            .from("profiles")
-            .update({ free_fixes_used: fixesUsed + 1 })
-            .eq("id", user.id);
-        }
-
-        return NextResponse.json({
-          ...result,
-          isFreeFix,
-          fixesRemaining: isFreeFix
-            ? Math.max(0, FREE_FIX_LIMIT + bonusFixes - (fixesUsed + 1))
-            : Math.max(0, FREE_FIX_LIMIT + bonusFixes - fixesUsed),
-        });
-      } catch (err: any) {
-        console.error(`[cover-letter/${model}] threw:`, err?.message);
-        lastError = err?.message || `Error with ${model}`;
-        continue;
-      }
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error("Gemini error:", res.status, errText.slice(0, 300));
+      return NextResponse.json(
+        { error: `AI service error: ${res.status}` },
+        { status: 502 }
+      );
     }
 
-    return NextResponse.json(
-      { error: `AI service unavailable. ${lastError}` },
-      { status: 502 }
-    );
+    const data = await res.json();
+    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!raw || typeof raw !== "string") {
+      return NextResponse.json(
+        { error: "Empty response from AI. Try again." },
+        { status: 502 }
+      );
+    }
+
+    // ---- 7. Parse JSON ----
+    const cleaned = raw
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/```$/i, "")
+      .trim();
+
+    let jsonString = cleaned;
+    if (!jsonString.startsWith("{")) {
+      const match = cleaned.match(/\{[\s\S]*\}/);
+      if (match) jsonString = match[0];
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(jsonString);
+    } catch {
+      return NextResponse.json(
+        { error: "Malformed AI response. Try again." },
+        { status: 502 }
+      );
+    }
+
+    // ---- 8. Normalize ----
+    const coverLetter =
+      typeof parsed.coverLetter === "string" ? parsed.coverLetter : "";
+
+    if (!coverLetter || coverLetter.length < 100) {
+      return NextResponse.json(
+        { error: "AI returned empty letter. Try again." },
+        { status: 502 }
+      );
+    }
+
+    const result = {
+      coverLetter,
+      wordCount:
+        typeof parsed.wordCount === "number"
+          ? parsed.wordCount
+          : coverLetter.split(/\s+/).filter(Boolean).length,
+      highlights: Array.isArray(parsed.highlights)
+        ? parsed.highlights.filter((h: any) => typeof h === "string")
+        : [],
+    };
+
+    // ---- 9. Increment free_fixes_used ----
+    if (isFreeFix) {
+      const { error: updateErr } = await supabase
+        .from("profiles")
+        .update({ free_fixes_used: fixesUsed + 1 })
+        .eq("id", user.id);
+      if (updateErr) console.error("Increment failed:", updateErr);
+    }
+
+    return NextResponse.json({
+      ...result,
+      isFreeFix,
+      fixesRemaining: isFreeFix
+        ? Math.max(0, FREE_FIX_LIMIT + bonusFixes - (fixesUsed + 1))
+        : Math.max(0, FREE_FIX_LIMIT + bonusFixes - fixesUsed),
+    });
   } catch (err: any) {
     console.error("[/api/cover-letter] Top-level error:", err?.message);
     return NextResponse.json(
