@@ -4,8 +4,15 @@ import { createServerSupabase } from "@/lib/supabase-server";
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
-const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
+const GEMINI_MODELS = [
+  "gemini-3.8-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3-flash",
+];
+
+const GEMINI_BASE =
+  "https://generativelanguage.googleapis.com/v1beta/models";
 
 const FREE_FIX_LIMIT = 3;
 
@@ -239,40 +246,63 @@ ${body?.interests || "(none)"}
 
 Generate the complete CV. Return JSON only.`;
 
-    const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: SYSTEM_PROMPT + "\n\n---\n\n" + userMessage }],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.5,
-          maxOutputTokens: 4096,
-          responseMimeType: "application/json",
-        },
-      }),
-      signal: AbortSignal.timeout(30000),
-    });
+    let lastError = "All Gemini models failed";
+    let raw: string | null = null;
 
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error("Gemini error:", res.status, errText.slice(0, 300));
-      return NextResponse.json(
-        { error: `AI service error: ${res.status}` },
-        { status: 502 }
-      );
+    for (const model of GEMINI_MODELS) {
+      try {
+        console.log(`[/api/build-cv] Trying Gemini model: ${model}`);
+
+        const res = await fetch(
+          `${GEMINI_BASE}/${model}:generateContent?key=${apiKey}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [
+                {
+                  role: "user",
+                  parts: [{ text: SYSTEM_PROMPT + "\n\n---\n\n" + userMessage }],
+                },
+              ],
+              generationConfig: {
+                temperature: 0.5,
+                maxOutputTokens: 8192,
+                responseMimeType: "application/json",
+              },
+            }),
+            signal: AbortSignal.timeout(60000),
+          }
+        );
+
+        if (!res.ok) {
+          const errText = await res.text();
+          console.error(`[${model}] HTTP ${res.status}:`, errText.slice(0, 200));
+          lastError = `${model} failed: ${res.status}`;
+          continue;
+        }
+
+        const data = await res.json();
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+        if (!text || typeof text !== "string") {
+          lastError = `${model} returned empty`;
+          continue;
+        }
+
+        raw = text;
+        console.log(`[/api/build-cv] ✅ Success with ${model}`);
+        break;
+      } catch (err: any) {
+        console.error(`[${model}] threw:`, err?.message);
+        lastError = err?.message || `Error with ${model}`;
+        continue;
+      }
     }
 
-    const data = await res.json();
-    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (!raw || typeof raw !== "string") {
+    if (!raw) {
       return NextResponse.json(
-        { error: "Empty response from AI. Try again." },
+        { error: `AI service unavailable. ${lastError}` },
         { status: 502 }
       );
     }
